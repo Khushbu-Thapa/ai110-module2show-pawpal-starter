@@ -1,88 +1,145 @@
 import streamlit as st
 
+import pawpal_system
+
 st.set_page_config(page_title="PawPal+", page_icon="🐾", layout="centered")
 
 st.title("🐾 PawPal+")
 
 st.markdown(
     """
-Welcome to the PawPal+ starter app.
-
-This file is intentionally thin. It gives you a working Streamlit app so you can start quickly,
-but **it does not implement the project logic**. Your job is to design the system and build it.
-
-Use this app as your interactive demo once your backend classes/functions exist.
+**PawPal+** is a pet care planning assistant. Add your pets and their care tasks,
+then generate a daily schedule that orders tasks by priority, time, and preferences.
 """
 )
 
-with st.expander("Scenario", expanded=True):
-    st.markdown(
-        """
-**PawPal+** is a pet care planning assistant. It helps a pet owner plan care tasks
-for their pet(s) based on constraints like time, priority, and preferences.
-
-You will design and implement the scheduling logic and connect it to this Streamlit UI.
-"""
-    )
-
-with st.expander("What you need to build", expanded=True):
-    st.markdown(
-        """
-At minimum, your system should:
-- Represent pet care tasks (what needs to happen, how long it takes, priority)
-- Represent the pet and the owner (basic info and preferences)
-- Build a plan/schedule for a day that chooses and orders tasks based on constraints
-- Explain the plan (why each task was chosen and when it happens)
-"""
-    )
+# --- Persistent state -------------------------------------------------------
+# Streamlit reruns the whole script on every interaction, so we keep the Owner
+# in st.session_state. Create it once; reuse it (with all pets/tasks) after.
+if "owner" not in st.session_state:
+    st.session_state.owner = pawpal_system.Owner(name="Jordan")
+owner = st.session_state.owner
 
 st.divider()
 
-st.subheader("Quick Demo Inputs (UI only)")
-owner_name = st.text_input("Owner name", value="Jordan")
-pet_name = st.text_input("Pet name", value="Mochi")
-species = st.selectbox("Species", ["dog", "cat", "other"])
+# --- Add a pet --------------------------------------------------------------
+st.subheader("Add a Pet")
+with st.form("add_pet_form", clear_on_submit=True):
+    pet_name = st.text_input("Pet name", value="Mochi")
+    species = st.selectbox("Species", ["dog", "cat", "other"])
+    if st.form_submit_button("Add pet"):
+        if pet_name.strip():
+            owner.add_pet(pawpal_system.Pet(name=pet_name.strip(), species=species))
+            st.success(f"Added {pet_name.strip()} ({species}).")
+        else:
+            st.warning("Please enter a pet name.")
 
-st.markdown("### Tasks")
-st.caption("Add a few tasks. In your final version, these should feed into your scheduler.")
-
-if "tasks" not in st.session_state:
-    st.session_state.tasks = []
-
-col1, col2, col3 = st.columns(3)
-with col1:
-    task_title = st.text_input("Task title", value="Morning walk")
-with col2:
-    duration = st.number_input("Duration (minutes)", min_value=1, max_value=240, value=20)
-with col3:
-    priority = st.selectbox("Priority", ["low", "medium", "high"], index=2)
-
-if st.button("Add task"):
-    st.session_state.tasks.append(
-        {"title": task_title, "duration_minutes": int(duration), "priority": priority}
-    )
-
-if st.session_state.tasks:
-    st.write("Current tasks:")
-    st.table(st.session_state.tasks)
+if owner.pets:
+    st.caption("Your pets: " + ", ".join(f"{p.name} ({p.species})" for p in owner.pets))
 else:
-    st.info("No tasks yet. Add one above.")
+    st.info("No pets yet. Add one above.")
 
 st.divider()
 
+# --- Add a task to a pet ----------------------------------------------------
+st.subheader("Add a Task")
+if not owner.pets:
+    st.info("Add a pet first, then you can give it tasks.")
+else:
+    with st.form("add_task_form", clear_on_submit=True):
+        pet_choice = st.selectbox("For pet", [p.name for p in owner.pets])
+        task_title = st.text_input("Task title", value="Morning walk")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            duration = st.number_input(
+                "Duration (minutes)", min_value=1, max_value=240, value=20
+            )
+        with col2:
+            priority = st.selectbox("Priority", ["low", "medium", "high"], index=2)
+        with col3:
+            preferred = st.text_input("Preferred time (HH:MM)", value="")
+        if st.form_submit_button("Add task"):
+            pet = next(p for p in owner.pets if p.name == pet_choice)
+            task = pawpal_system.Task.from_ui(
+                {
+                    "title": task_title,
+                    "duration_minutes": int(duration),
+                    "priority": priority,
+                    "preferred_time": preferred,
+                }
+            )
+            owner.add_task(pet, task)
+            st.success(f"Added '{task_title}' for {pet.name}.")
+
+# Show the current tasks across all pets, with sort + filter controls.
+all_tasks = owner.list_all_tasks()
+if all_tasks:
+    st.write("Current tasks:")
+
+    fcol1, fcol2, fcol3 = st.columns(3)
+    with fcol1:
+        pet_filter = st.selectbox(
+            "Filter by pet", ["All pets"] + [p.name for p in owner.pets]
+        )
+    with fcol2:
+        status_filter = st.selectbox("Filter by status", ["All", "Pending", "Completed"])
+    with fcol3:
+        sort_choice = st.selectbox("Sort by", ["As added", "By time"])
+
+    # Apply the filters via Owner.filter_tasks (pet name / completion status).
+    completed = {"Pending": False, "Completed": True}.get(status_filter)
+    tasks = owner.filter_tasks(
+        pet=None if pet_filter == "All pets" else pet_filter,
+        completed=completed,
+    )
+
+    # Apply the chosen sort.
+    if sort_choice == "By time":
+        tasks = pawpal_system.sort_by_time(tasks)
+
+    if tasks:
+        st.table(
+            [
+                {
+                    "Pet": t.pet_name,
+                    "Task": t.description,
+                    "Duration (min)": t.duration_minutes,
+                    "Priority": t.priority.name.lower(),
+                    "Preferred": t.preferred_time.strftime("%H:%M") if t.preferred_time else "—",
+                    "Done": "✅" if t.completed else "",
+                }
+                for t in tasks
+            ]
+        )
+    else:
+        st.caption("No tasks match the current filters.")
+
+st.divider()
+
+# --- Owner constraints ------------------------------------------------------
+st.subheader("Plan Settings")
+owner.available_minutes = st.number_input(
+    "Available minutes today", min_value=15, max_value=600, value=owner.available_minutes
+)
+
+# --- Generate the schedule --------------------------------------------------
 st.subheader("Build Schedule")
-st.caption("This button should call your scheduling logic once you implement it.")
+
+# Lightweight, non-crashing pre-check: warn about clashing fixed-time tasks
+# before the user even builds a schedule.
+pre_warning = pawpal_system.Scheduler(owner).conflict_warning()
+if pre_warning:
+    st.warning(pre_warning)
 
 if st.button("Generate schedule"):
-    st.warning(
-        "Not implemented yet. Next step: create your scheduling logic (classes/functions) and call it here."
-    )
-    st.markdown(
-        """
-Suggested approach:
-1. Design your UML (draft).
-2. Create class stubs (no logic).
-3. Implement scheduling behavior.
-4. Connect your scheduler here and display results.
-"""
-    )
+    if not owner.pending_tasks():
+        st.warning("No pending tasks to schedule. Add some tasks first.")
+    else:
+        plan = pawpal_system.Scheduler(owner).build_plan()
+        # Post-schedule validation: surface any overlaps as a warning, never crash.
+        plan_warning = plan.conflict_warning()
+        if plan_warning:
+            st.warning(plan_warning)
+        if plan.slots:
+            st.table(plan.to_table())
+        st.text(plan.explain())

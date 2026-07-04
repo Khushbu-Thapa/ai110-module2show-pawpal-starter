@@ -37,10 +37,81 @@ Yes. After reviewing the skeleton, I made several changes before writing logic:
 - What constraints does your scheduler consider (for example: time, priority, preferences)?
 - How did you decide which constraints mattered most?
 
+The scheduler weighs several constraints when building a `DailyPlan`:
+
+1. **The day window `[day_start, day_end]`** — the owner's availability. Every
+   task must fit inside this window; `available_minutes` derives the end when no
+   explicit `day_end` is set. This is the single source of truth for placement.
+2. **Preferred time (fixed-time anchors)** — tasks with a `preferred_time` are
+   placed *first*, at their requested clock time, and skipped if that time is
+   outside the window or collides with another anchor.
+3. **Priority (high → medium → low)** — flexible tasks are ordered so the most
+   important care happens first when time is scarce.
+4. **Duration** — among equal-priority tasks, shorter ones go first (they pack
+   more tasks into the day) and every task must fit an open gap.
+5. **Recurrence + completion status** — only tasks that are *due today*
+   (`is_due_on`) and *not completed* are considered, so weekly/one-off tasks
+   don't clutter every day and finished tasks drop out automatically.
+
+**How I decided what mattered most.** I ranked constraints by how "hard" they
+are — whether violating them produces a plan the owner literally can't follow:
+
+- **Time is a hard constraint** and comes first: a plan that double-books the
+  owner or runs past their day is simply wrong, so the window and anchor
+  conflicts are enforced before anything else.
+- **Preferred time outranks priority** because a fixed time is a real-world
+  commitment (a 9:00 vet appointment can't move to fill a gap), whereas priority
+  only orders the *flexible* work.
+- **Priority then duration** are soft, preference-level tiebreakers: they decide
+  *which* flexible tasks win the remaining time and in what order, but never
+  override the hard time constraints above.
+
+In short: **fit-in-time first, honor fixed commitments second, then do the most
+important and most time-efficient work with whatever room is left.**
+
 **b. Tradeoffs**
 
 - Describe one tradeoff your scheduler makes.
 - Why is that tradeoff reasonable for this scenario?
+
+**Tradeoff: a single-track timeline (one task at a time across *all* pets).**
+
+The scheduler treats the owner as a single resource who can only do one thing
+at a time. Every task — regardless of which pet it belongs to — is placed on one
+shared timeline, and `_has_conflict()` / `_earliest_free()` reject any placement
+that overlaps an already-placed slot. So two tasks can never run in parallel,
+even when they realistically could: e.g. the cat's kibble could soak while the
+dog is being walked, but the scheduler still serializes them.
+
+Note this is *not* an "exact time match only" check — conflicts are detected on
+full `[start, start+duration)` intervals using minute math, so a 09:00 feeding
+and a 09:05 medication are correctly flagged as overlapping, not just identical
+start times. The tradeoff is the opposite one: the model is *too strict* about
+parallelism, not too loose about overlap.
+
+**Why it's reasonable here:**
+
+1. **It matches the primary user.** PawPal+ plans one owner's hands-on care
+   day. Most pet tasks (walking, feeding, grooming, vet trips) genuinely require
+   the owner's undivided attention, so serial scheduling reflects reality for the
+   common case.
+2. **It keeps the model simple and the plan trustworthy.** A single timeline
+   means the output is a clean, conflict-free ordering the owner can follow top
+   to bottom. Allowing parallelism would require modeling which tasks are
+   "attended" vs "passive," per-task attention costs, and possibly multiple
+   caregivers — a large jump in complexity for marginal benefit at this scale.
+3. **It fails safe.** Over-serializing at worst makes the day look busier than it
+   is (and may skip a task for lack of time). Under-serializing — letting two
+   attention-requiring tasks overlap — would produce a plan the owner physically
+   can't execute, which is a worse failure.
+
+**What it costs / how I'd revisit it:** the scheduler may report a task as
+skipped ("no free slot") when a real owner could have doubled up on a passive
+task. A future iteration could add a `Task.requires_attention` flag and let
+passive tasks overlap others, or support multiple caregivers — at which point
+the existing `detect_overlaps()` (which already classifies same-pet vs
+different-pet collisions) becomes the tool for surfacing the clashes that still
+matter.
 
 ---
 
