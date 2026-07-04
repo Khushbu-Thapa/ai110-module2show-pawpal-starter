@@ -433,3 +433,80 @@ def test_plan_conflict_warning_empty_when_no_overlaps():
     """A clean plan produces no warning string."""
     plan = DailyPlan(slots=[_slot("Walk", "Rex", time(9, 0), time(9, 30))])
     assert plan.conflict_warning() == ""
+
+
+# --- Rubric-required cases ---------------------------------------------------
+# Three tests mapping directly to the assignment's minimum requirements:
+#   1. Sorting Correctness   2. Recurrence Logic   3. Conflict Detection
+
+
+def test_sorting_returns_tasks_in_chronological_order():
+    """Sorting Correctness: tasks are returned in chronological (by-time) order.
+
+    Given fixed-time tasks in scrambled input order, sort_by_time should return
+    them earliest-start-first.
+    """
+    evening = Task("Evening walk", 30, Priority.MEDIUM, preferred_time=time(18, 0))
+    breakfast = Task("Breakfast", 15, Priority.HIGH, preferred_time=time(7, 30))
+    lunch = Task("Lunch", 20, Priority.LOW, preferred_time=time(12, 0))
+
+    ordered = [t.description for t in sort_by_time([evening, breakfast, lunch])]
+
+    assert ordered == ["Breakfast", "Lunch", "Evening walk"]
+
+
+def test_completing_daily_task_creates_task_for_next_day():
+    """Recurrence Logic: completing a daily task spawns the next occurrence.
+
+    Tasks don't carry a calendar date; a daily task's "next day" is represented
+    by a fresh, incomplete copy. Completing the task should mark the original as
+    history and leave exactly one new incomplete daily instance ready to plan.
+    """
+    pet = Pet(name="Rex", species="dog")
+    walk = Task("Morning walk", 30, Priority.HIGH, preferred_time=time(8, 0),
+                recurrence="daily")
+    pet.add_task(walk)
+
+    nxt = pet.complete_task(walk)
+
+    # Original becomes completed history.
+    assert walk.completed is True
+    # A brand-new, incomplete instance stands in for the next day's task.
+    assert nxt is not None and nxt is not walk
+    assert nxt.completed is False
+    assert nxt.recurrence == "daily"
+    assert nxt.description == "Morning walk" and nxt.preferred_time == time(8, 0)
+    # The pet now holds history + exactly one pending next occurrence.
+    tasks = pet.get_tasks()
+    assert len(tasks) == 2
+    assert [t for t in tasks if not t.completed] == [nxt]
+
+
+def test_scheduler_flags_duplicate_times():
+    """Conflict Detection: two tasks at the SAME fixed time are flagged.
+
+    Both the pre-schedule check (find_conflicts / conflict_warning) and the plan
+    itself should surface the clash rather than silently double-booking.
+    """
+    owner = Owner(name="Sam", available_minutes=120, day_start=time(8, 0))
+    pet = Pet(name="Rex", species="dog")
+    owner.add_pet(pet)
+    owner.add_task(pet, Task("Feed", 20, Priority.HIGH, preferred_time=time(9, 0)))
+    owner.add_task(pet, Task("Meds", 20, Priority.MEDIUM, preferred_time=time(9, 0)))
+
+    # Reported as a conflict pair.
+    conflicts = owner.find_conflicts()
+    assert len(conflicts) == 1
+    assert {conflicts[0][0].description, conflicts[0][1].description} == {"Feed", "Meds"}
+
+    # Surfaced in the human-readable warning.
+    msg = Scheduler(owner).conflict_warning()
+    assert msg.startswith("⚠️")
+    assert "Feed" in msg and "Meds" in msg
+
+    # And the plan keeps only one of them, skipping the duplicate with a reason.
+    plan = Scheduler(owner).build_plan()
+    assert len(plan.slots) == 1
+    assert len(plan.skipped) == 1
+    _task, reason = plan.skipped[0]
+    assert "conflicts" in reason

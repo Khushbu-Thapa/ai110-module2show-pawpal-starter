@@ -32,6 +32,16 @@ source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
+### Running
+
+```bash
+# Launch the Streamlit UI:
+streamlit run app.py
+
+# Or run the command-line demo (builds a sample owner + pets and prints a plan):
+python main.py
+```
+
 ### Suggested workflow
 
 1. Read the scenario carefully and identify requirements and edge cases.
@@ -44,13 +54,27 @@ pip install -r requirements.txt
 
 ## 🖥️ Sample Output
 
+Running `python main.py` prints the sorting/filtering demo, a conflict check,
+and today's generated schedule:
+
+```
+Conflict check
+--------------
+  ⚠️ 1 time conflict — Feeding & Medication at 09:00 (same pet: Biscuit)
+
+Today's schedule (day starts 08:00, 120 min available)
+==================================================
 Scheduled (highest priority first, earliest fitting slot):
-  08:00 — Feeding for Mochi (10 min) [high]
-  08:10 — Morning walk for Mochi (30 min) [high]
-  08:40 — Enrichment play for Biscuit (20 min) [medium]
+  08:00 — Morning walk for Mochi (30 min) [high]
+  08:30 — Vet visit for Mochi (20 min) [medium]
   09:00 — Feeding for Biscuit (10 min) [high]
-  09:10 — Grooming for Mochi (40 min) [low]
-Total time used: 110 min.
+  09:10 — Enrichment play for Biscuit (20 min) [medium]
+Total time used: 80 min.
+
+Skipped:
+  Medication — preferred time conflicts with another task
+  Grooming — no free time slot large enough remains in the day window
+```
 
 ## 🧪 Testing PawPal+
 
@@ -65,8 +89,41 @@ pytest --cov
 Sample test output:
 
 ```
-# Paste your pytest output here
+platform darwin -- Python 3.13.2, pytest-9.1.1, pluggy-1.6.0
+collected 32 items
+
+tests/test_pawpal.py ................................                    [100%]
+
+============================== 32 passed in 0.02s ==============================
 ```
+
+### Confidence Level: ★★★★☆ (4 / 5)
+
+Based on the test results and a review of the code:
+
+**What earns 4 stars**
+
+- **32/32 tests pass** in ~0.02s, with no failures, warnings, or flakiness.
+- **Coverage is meaningful, not superficial.** The suite exercises real behaviors
+  across every core feature: scheduling (gap-filling, over-window skips,
+  no-overlap guarantees), sorting (anchored-then-flexible, tiebreaks), filtering
+  (by pet, status, combined), conflict detection (same-pet, different-pet,
+  adjacent-slot edge cases), and recurring tasks (daily/weekly/once rollover,
+  weekday preservation).
+- **Edge cases and failure modes are tested**, not just happy paths — e.g.
+  `test_conflict_warning_does_not_crash_on_bad_data` confirms the
+  "warn instead of crash" design actually holds.
+- **The CLI demo runs cleanly end-to-end** and its output matches the documented
+  behavior.
+
+**Why not 5 stars**
+
+- **Coverage has not been measured.** Quality is inferred from test intent, not a
+  `pytest --cov` report.
+- **The Streamlit UI (`app.py`) has no automated tests.** All 32 tests target the
+  logic in `pawpal_system.py`; the UI wiring is only verified by manual inspection.
+- **No property/fuzz tests** — the "no overlaps" invariant is proven only on
+  hand-picked cases, not randomized inputs.
 
 ## 📐 Smarter Scheduling
 
@@ -144,12 +201,19 @@ tasks also carry a `weekday`).
 
 ## 📸 Demo Walkthrough
 
-Describe your app in numbered steps so a reader can follow along without watching a video:
+Launch the UI with `streamlit run app.py`, then:
 
-1. <!-- Describe this step -->
-2. <!-- Describe this step -->
-3. <!-- Describe this step -->
-4. <!-- Describe this step -->
-5. <!-- Add more steps as needed -->
+1. **Add a Pet** — enter a name and pick a species (dog / cat / other). Added
+   pets are listed back to you so you can build a household of several pets.
+2. **Add a Task** — choose which pet it's for, then set a title, duration,
+   priority (low / medium / high), and an optional preferred time (`HH:MM`) to
+   anchor it to a fixed slot.
+3. **Review current tasks** — the table below supports filtering by pet and by
+   status (pending / completed) and sorting either as-added or chronologically
+   by time.
+4. **Set plan settings** — adjust the total minutes available for the day.
+5. **Build Schedule** — click *Generate schedule*. PawPal+ warns about any
+   time conflicts (without crashing), then displays the ordered plan plus an
+   explanation of what was scheduled and what was skipped and why.
 
 **Screenshot or video** *(optional)*: <!-- Insert a screenshot or link to a demo video here -->
