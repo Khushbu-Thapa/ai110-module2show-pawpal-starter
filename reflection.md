@@ -5,7 +5,9 @@
 **a. Initial design**
 
 - Briefly describe your initial UML design.
+--> The PawPal system has pet, owner profile. Owner can create, edit and delete the pet information. Owner can schedule the feeding alert, walk alert and scheduling for pets health. They can also enter these information and track these information so that statistcs/charts can be created. 
 - What classes did you include, and what responsibilities did you assign to each?
+--> Pet, Owner classes
 
 **b. Design changes**
 

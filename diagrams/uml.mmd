@@ -1,15 +1,77 @@
 classDiagram
-    %% Replace the placeholders below with your actual classes, attributes, methods, and relationships.
-    %% Keep this file updated so it matches your final implementation.
+    %% PawPal+ class diagram
+    %% Data objects hold info; Scheduler does the logic; DailyPlan/ScheduledSlot carry the result.
 
-    class ClassName {
-        +type attribute
-        +method() returnType
+    class Owner {
+        +str name
+        +list~Pet~ pets
+        +int available_minutes
+        +time day_start
+        +dict preferences
+        +add_pet(pet) void
+        +remove_pet(pet) void
+        +add_task(pet, task) void
+        +list_all_tasks() list~CareTask~
     }
 
-    class AnotherClass {
-        +type attribute
-        +method() returnType
+    class Pet {
+        +str name
+        +str species
+        +list~CareTask~ tasks
+        +str notes
+        +add_task(task) void
+        +remove_task(task) void
+        +get_tasks() list~CareTask~
     }
 
-    ClassName --> AnotherClass : relationship
+    class CareTask {
+        +str title
+        +int duration_minutes
+        +Priority priority
+        +time preferred_time
+        +str recurrence
+        +is_higher_priority_than(other) bool
+        +fits_in(remaining_minutes) bool
+    }
+
+    class Priority {
+        <<enumeration>>
+        LOW
+        MEDIUM
+        HIGH
+        +weight() int
+        +from_string(s) Priority
+    }
+
+    class Scheduler {
+        +list~CareTask~ tasks
+        +int available_minutes
+        +time day_start
+        +sort_tasks() list~CareTask~
+        +build_plan() DailyPlan
+        -_place_task(task, current_time) ScheduledSlot
+        -_skip_reason(task) str
+    }
+
+    class DailyPlan {
+        +list~ScheduledSlot~ slots
+        +list skipped
+        +int total_minutes_used
+        +explain() str
+        +to_table() list~dict~
+    }
+
+    class ScheduledSlot {
+        +CareTask task
+        +time start_time
+        +time end_time
+        +formatted() str
+    }
+
+    Owner "1" --> "*" Pet : owns
+    Pet "1" --> "*" CareTask : has
+    CareTask "*" --> "1" Priority : rated by
+    Scheduler ..> CareTask : reads
+    Scheduler ..> DailyPlan : produces
+    DailyPlan "1" --> "*" ScheduledSlot : contains
+    ScheduledSlot "1" --> "1" CareTask : places
