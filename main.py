@@ -1,13 +1,53 @@
 """PawPal+ command-line demo.
 
 Builds an owner with two pets and several care tasks — deliberately added out
-of chronological order — then shows off the sorting and filtering methods
-before printing today's generated schedule. Run with:  python main.py
+of chronological order — then shows off the sorting, filtering, and scheduling
+methods before printing today's generated schedule. Run with:  python main.py
+
+Output formatting (Challenge 4) uses:
+  - `tabulate` for structured, boxed CLI tables.
+  - emojis for different task types (🚶 walk, 🍽️ feeding, 💊 meds ...).
+  - color-coded priority indicators (🔴 High / 🟡 Medium / 🟢 Low).
 """
 
 from datetime import time
 
+from tabulate import tabulate
+
 from pawpal_system import Owner, Pet, Priority, Scheduler, Task
+
+DATA_FILE = "data.json"
+
+# --- Challenge 4: output formatting maps ------------------------------------
+# Task-type emoji, chosen by a keyword found in the task description.
+TASK_EMOJI = {
+    "walk": "🚶",
+    "feed": "🍽️",
+    "med": "💊",
+    "groom": "✂️",
+    "play": "🎾",
+    "enrich": "🧩",
+    "vet": "🏥",
+    "train": "🎓",
+    "bath": "🛁",
+}
+
+# Color-coded priority indicators (a colored circle survives in plain text,
+# unlike raw ANSI codes, so it reads cleanly in the README too).
+PRIORITY_ICON = {
+    Priority.HIGH: "🔴 High",
+    Priority.MEDIUM: "🟡 Medium",
+    Priority.LOW: "🟢 Low",
+}
+
+
+def task_emoji(description: str) -> str:
+    """Pick an emoji for a task by matching a keyword in its description."""
+    text = description.lower()
+    for keyword, emoji in TASK_EMOJI.items():
+        if keyword in text:
+            return emoji
+    return "🐾"  # default paw for anything uncategorized
 
 
 def build_demo_owner() -> Owner:
@@ -68,23 +108,66 @@ def build_demo_owner() -> Owner:
     return owner
 
 
-def format_task(task: Task) -> str:
-    """One-line human summary of a task, e.g. '08:00  Feeding (Mochi) [high]'."""
-    when = task.preferred_time.strftime("%H:%M") if task.preferred_time else "  —  "
-    done = " ✅" if task.completed else ""
-    return (f"{when}  {task.description} ({task.pet_name}) "
-            f"[{task.priority.name.lower()}]{done}")
+def task_row(task: Task) -> list[str]:
+    """One task as a table row: time, emoji+name, pet, priority icon, status."""
+    when = task.preferred_time.strftime("%H:%M") if task.preferred_time else "—"
+    status = "✅ done" if task.completed else "⏳ pending"
+    return [
+        when,
+        f"{task_emoji(task.description)} {task.description}",
+        task.pet_name,
+        PRIORITY_ICON[task.priority],
+        status,
+    ]
 
 
-def print_section(title: str, tasks: list[Task]) -> None:
-    """Print a titled block of task lines (or a placeholder if empty)."""
+def print_task_table(title: str, tasks: list[Task]) -> None:
+    """Print a titled, boxed table of tasks (or a placeholder if empty)."""
     print(f"\n{title}")
-    print("-" * len(title))
     if not tasks:
         print("  (none)")
         return
-    for task in tasks:
-        print(f"  {format_task(task)}")
+    print(
+        tabulate(
+            [task_row(t) for t in tasks],
+            headers=["Time", "Task", "Pet", "Priority", "Status"],
+            tablefmt="rounded_grid",
+        )
+    )
+
+
+def print_schedule(plan, owner: Owner) -> None:
+    """Print the generated plan as a boxed schedule table plus skip reasons."""
+    print(
+        f"\nToday's schedule (day starts {owner.day_start.strftime('%H:%M')}, "
+        f"{owner.available_minutes} min available)"
+    )
+    if plan.slots:
+        rows = [
+            [
+                f"{s.start_time.strftime('%H:%M')}–{s.end_time.strftime('%H:%M')}",
+                f"{task_emoji(s.task.description)} {s.task.description}",
+                s.task.pet_name,
+                f"{s.task.duration_minutes} min",
+                PRIORITY_ICON[s.task.priority],
+            ]
+            for s in plan.slots
+        ]
+        print(
+            tabulate(
+                rows,
+                headers=["Time", "Task", "Pet", "Duration", "Priority"],
+                tablefmt="rounded_grid",
+            )
+        )
+        print(f"Total time used: {plan.total_minutes_used} min.")
+    else:
+        print("  No tasks could be scheduled.")
+
+    if plan.skipped:
+        print("\nSkipped:")
+        for task, reason in plan.skipped:
+            print(f"  {task_emoji(task.description)} {task.description} — {reason}")
 
 
 def main() -> None:
@@ -95,31 +178,46 @@ def main() -> None:
     print("=" * 50)
 
     # 1) As entered — deliberately out of order.
-    print_section("Tasks as added (unsorted)", owner.list_all_tasks())
+    print_task_table("Tasks as added (unsorted)", owner.list_all_tasks())
 
     # 2) Sorting: chronological via tasks_by_time().
-    print_section("Sorted by time (tasks_by_time)", owner.tasks_by_time())
+    print_task_table("Sorted by time (tasks_by_time)", owner.tasks_by_time())
 
-    # 3) Filtering by pet name.
-    print_section("Filtered to Mochi (tasks_for_pet)", owner.tasks_for_pet("Mochi"))
+    # 3) Challenge 3 — priority FIRST, then time.
+    scheduler = Scheduler(owner)
+    print_task_table(
+        "Sorted by priority, then time (sort_by_priority_then_time)",
+        scheduler.sort_by_priority_then_time(),
+    )
 
-    # 4) Filtering by completion status.
-    print_section("Pending only (pending_tasks)", owner.pending_tasks())
-    print_section("Completed only (completed_tasks)", owner.completed_tasks())
+    # 4) Filtering by pet name and by completion status.
+    print_task_table("Filtered to Mochi (tasks_for_pet)", owner.tasks_for_pet("Mochi"))
+    print_task_table("Pending only (pending_tasks)", owner.pending_tasks())
 
     # 5) Lightweight conflict pre-check (never crashes; returns a message).
-    scheduler = Scheduler(owner)
     warning = scheduler.conflict_warning()
     print("\nConflict check")
-    print("-" * len("Conflict check"))
     print(f"  {warning}" if warning else "  No time conflicts detected.")
 
     # 6) The generated schedule (completed tasks are excluded automatically).
-    plan = scheduler.build_plan()
-    print(f"\nToday's schedule (day starts {owner.day_start.strftime('%H:%M')}, "
-          f"{owner.available_minutes} min available)")
     print("=" * 50)
-    print(plan.explain())
+    plan = scheduler.build_plan()
+    print_schedule(plan, owner)
+
+    # 7) Challenge 1 — "next available slot" query for a hypothetical new task.
+    for minutes in (15, 90):
+        slot = Scheduler(owner).next_available_slot(minutes)
+        when = slot.strftime("%H:%M") if slot else "no room left today"
+        print(f"\n🔎 Earliest free slot for a {minutes}-min task: {when}")
+
+    # 8) Challenge 2 — persistence: save to data.json and reload it.
+    owner.save_to_json(DATA_FILE)
+    reloaded = Owner.load_from_json(DATA_FILE)
+    print(
+        f"\n💾 Saved {len(owner.pets)} pets / {len(owner.list_all_tasks())} tasks "
+        f"to {DATA_FILE}; reloaded {len(reloaded.pets)} pets / "
+        f"{len(reloaded.list_all_tasks())} tasks — data persists between runs."
+    )
 
 
 if __name__ == "__main__":

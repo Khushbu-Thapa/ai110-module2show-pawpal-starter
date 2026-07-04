@@ -1,0 +1,117 @@
+classDiagram
+    %% PawPal+ final class diagram — reflects pawpal_system.py as built.
+    %% Data objects (Owner/Pet/Task) hold info; Scheduler does the logic;
+    %% DailyPlan/ScheduledSlot carry the result. Priority is a shared enum.
+    %% Note: the class formerly drafted as "CareTask" is now "Task"
+    %% (CareTask remains as a backwards-compatible alias in code).
+    %% Module-level helper (not a class): sort_by_time(tasks) -> list~Task~.
+
+    class Owner {
+        +str name
+        +list~Pet~ pets
+        +int available_minutes
+        +time day_start
+        +time day_end
+        +dict preferences
+        +add_pet(pet) void
+        +remove_pet(pet) void
+        +add_task(pet, task) void
+        +complete_task(task) Task
+        +list_all_tasks() list~Task~
+        +pending_tasks() list~Task~
+        +filter_tasks(pet, completed, due_on) list~Task~
+        +tasks_for_pet(pet) list~Task~
+        +completed_tasks() list~Task~
+        +due_tasks(today) list~Task~
+        +tasks_by_time() list~Task~
+        +find_conflicts(today) list~tuple~
+    }
+
+    class Pet {
+        +str name
+        +str species
+        +list~Task~ tasks
+        +str notes
+        +add_task(task) void
+        +remove_task(task) void
+        +get_tasks() list~Task~
+        +complete_task(task) Task
+    }
+
+    class Task {
+        +str description
+        +int duration_minutes
+        +Priority priority
+        +str pet_name
+        +time preferred_time
+        +str recurrence
+        +int weekday
+        +bool completed
+        +from_ui(data)$ Task
+        +is_due_on(today) bool
+        +is_higher_priority_than(other) bool
+        +start_minutes() int
+        +end_minutes() int
+        +time_sort_key() tuple
+        +overlaps(other) bool
+        +fits_in(remaining_minutes) bool
+        +mark_complete() void
+        +mark_undone() void
+        +is_recurring() bool
+        +next_occurrence() Task
+    }
+
+    class Priority {
+        <<enumeration>>
+        LOW
+        MEDIUM
+        HIGH
+        +weight() int
+        +from_string(s)$ Priority
+    }
+
+    class Scheduler {
+        +Owner owner
+        +list~Task~ tasks
+        +int available_minutes
+        +time day_start
+        +time day_end
+        +date today
+        +sort_tasks() list~Task~
+        +build_plan() DailyPlan
+        +detect_overlaps(plan) list~tuple~
+        +conflict_warning(today) str
+        -_sorted(tasks) list~Task~
+        -_place_task(task, start_minutes) ScheduledSlot
+        -_insert_sorted(placed, slot) void
+        -_has_conflict(start_minutes, duration, placed) bool
+        -_earliest_free(day_start, day_end, duration, placed) int
+        -_skip_reason(task, day_start, day_end) str
+    }
+
+    class DailyPlan {
+        +list~ScheduledSlot~ slots
+        +list skipped
+        +int total_minutes_used
+        +list overlaps
+        +explain() str
+        +conflict_warning() str
+        +to_table() list~dict~
+    }
+
+    class ScheduledSlot {
+        +Task task
+        +time start_time
+        +time end_time
+        +formatted() str
+        +overlaps(other) bool
+    }
+
+    Owner "1" --> "*" Pet : owns
+    Pet "1" --> "*" Task : has
+    Task "*" --> "1" Priority : rated by
+    Scheduler "1" --> "1" Owner : reads constraints from
+    Scheduler ..> DailyPlan : produces
+    Scheduler ..> ScheduledSlot : creates
+    DailyPlan "1" --> "*" ScheduledSlot : contains
+    ScheduledSlot "1" --> "1" Task : places

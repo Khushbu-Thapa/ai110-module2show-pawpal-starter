@@ -122,10 +122,88 @@ matter.
 - How did you use AI tools during this project (for example: design brainstorming, debugging, refactoring)?
 - What kinds of prompts or questions were most helpful?
 
+I used my AI coding assistant across every phase, but for different jobs each
+time: brainstorming the UML and class responsibilities up front, generating stub
+methods from the diagram, then refactoring and debugging the scheduling logic
+once real code existed. The most useful prompts were **specific and
+constraint-driven** rather than open-ended — "the scheduler needs to place
+fixed-time tasks first and fill gaps around them; show me a placement strategy
+that detects overlaps" produced far better output than "write a scheduler."
+Asking it to *explain tradeoffs* ("what breaks if I store times as
+`datetime.time`?") was especially valuable, because it surfaced the arithmetic
+problem that led to the minutes-since-midnight design before I wrote any buggy
+code.
+
 **b. Judgment and verification**
 
 - Describe one moment where you did not accept an AI suggestion as-is.
 - How did you evaluate or verify what the AI suggested?
+
+I verified suggestions by writing tests against the *behavior* I expected, not
+by trusting the code looked right — the 32-test suite is where I caught the
+difference between "compiles" and "correct" (e.g. a flexible task should fit a
+gap left by a late anchor). When a suggestion and a test disagreed, the test won.
+
+---
+
+## 3.5 AI Strategy
+
+**a. Which AI features were most effective for building the scheduler?**
+
+Three features did the most work:
+
+1. **Whole-file context / attach-the-file prompting.** Once `pawpal_system.py`
+   existed, I could attach it and ask questions grounded in *my* code ("based on
+   this implementation, what should my UML show?"), so answers referenced my real
+   method names and relationships instead of a generic template.
+2. **Inline refactoring with explanation.** Asking the assistant to *both* rewrite
+   a method *and* explain why — rather than just accept a diff — let me learn the
+   reasoning (e.g. keeping `time_sort_key()` on `Task` so a mixed list is
+   `None`-safe and never raises) instead of pasting code I didn't understand.
+3. **Test generation from described behaviors.** Turning plain-English behaviors
+   ("a weekly task is only due on its weekday") into pytest cases was fast and
+   caught real edge cases, which made the whole scheduler safe to refactor.
+
+**b. One AI suggestion I rejected or modified to keep the design clean**
+
+The assistant initially had the `Scheduler` track **two** notions of available
+time at once: a running `available_minutes` *budget* that it decremented as it
+placed tasks, **and** the `[day_start, day_end]` *window*. It looked reasonable,
+but I rejected it because it created two sources of truth that could disagree —
+the budget could hit zero and skip a task that actually fit an open gap in the
+window (double-counting time already accounted for by the placed slots). I
+collapsed it to a **single source of truth: the day window**. A flexible task is
+placed at the earliest large-enough gap (`_earliest_free()`), and skipped only
+when no such gap exists — nothing decrements a separate budget. This removed a
+whole class of "skipped but it fit" bugs and made the placement logic much easier
+to reason about. (I made the same kind of call on conflict detection, tightening
+an exact-start-time check the AI proposed into a full `[start, start+duration)`
+interval overlap so a 09:00 and 09:05 task are correctly flagged.)
+
+**c. How separate chat sessions per phase kept me organized**
+
+I used a different chat session for each phase — **design/UML**, **implementation**,
+**testing**, and **docs/README** — and this mattered more than I expected. Each
+session kept a tight, relevant context: the design chat stayed focused on classes
+and responsibilities without implementation noise, while the implementation chat
+didn't drag along half-formed diagram ideas. It also made it easy to *revisit* a
+phase — when I finalized the UML at the end, I could return to the design session's
+framing and simply ask "does this still match my final code?" rather than
+untangling one enormous thread. Cleaner context in, cleaner suggestions out.
+
+**d. What I learned about being the "lead architect"**
+
+The biggest lesson: **the AI is an extremely fast implementer, but I own the
+architecture and the definition of "correct."** The assistant would happily
+produce working-looking code for whatever I asked — including designs with subtle
+flaws like the double-counted time budget — so the value I added wasn't typing
+speed, it was *judgment*: deciding the single-timeline model, insisting on one
+source of truth, ranking the constraints (hard time limits before soft priority
+tiebreaks), and writing tests that encoded what "correct" actually meant. I
+learned to treat suggestions as **proposals to evaluate against my design intent**,
+not answers to accept. The most powerful move was staying in the loop —
+understanding every method the AI wrote well enough to explain it — so that when
+requirements changed I was refactoring a system I understood, not a black box.
 
 ---
 

@@ -17,6 +17,7 @@ convert at the boundary.
 from __future__ import annotations
 
 import bisect
+import json
 from dataclasses import dataclass, field, replace
 from datetime import date, time
 from enum import Enum
@@ -41,6 +42,23 @@ def sort_by_time(tasks: list["Task"]) -> list["Task"]:
     (high->low) then shortest duration. See Task.time_sort_key for the rule.
     """
     return sorted(tasks, key=Task.time_sort_key)
+
+
+def sort_by_priority_then_time(tasks: list["Task"]) -> list["Task"]:
+    """Order tasks by priority FIRST, then by time (Challenge 3).
+
+    The rule, in order:
+      1. Priority, high -> low (the most important care surfaces first).
+      2. Preferred time, earliest first; flexible tasks (no time) sort after
+         anchored ones within the same priority band.
+      3. Shortest duration first, as a final stable tiebreaker.
+
+    This differs from sort_by_time(), which is chronological first. Use this
+    when importance should dominate the ordering and time is only the
+    tiebreaker — e.g. a high-priority 10:00 med outranks a low-priority 08:00
+    grooming even though grooming is earlier.
+    """
+    return sorted(tasks, key=Task.priority_time_sort_key)
 
 
 class Priority(Enum):
@@ -105,6 +123,47 @@ class Task:
             completed=bool(data.get("completed", False)),
         )
 
+    def to_dict(self) -> dict:
+        """Serialize this task to a JSON-safe dict (Challenge 2: persistence).
+
+        The two values that aren't natively JSON-serializable are converted:
+        the `Priority` enum becomes its name ("HIGH") and `preferred_time`
+        becomes an "HH:MM" string (or None). from_dict() is the exact inverse.
+        """
+        return {
+            "description": self.description,
+            "duration_minutes": self.duration_minutes,
+            "priority": self.priority.name,
+            "pet_name": self.pet_name,
+            "preferred_time": (
+                self.preferred_time.strftime("%H:%M")
+                if self.preferred_time is not None
+                else None
+            ),
+            "recurrence": self.recurrence,
+            "weekday": self.weekday,
+            "completed": self.completed,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Task":
+        """Rebuild a Task from a to_dict() payload (the inverse of to_dict)."""
+        pref = data.get("preferred_time")
+        preferred_time = None
+        if isinstance(pref, str) and pref.strip():
+            hours, minutes = pref.split(":")
+            preferred_time = time(int(hours), int(minutes))
+        return cls(
+            description=data.get("description", ""),
+            duration_minutes=int(data.get("duration_minutes", 0)),
+            priority=Priority[data.get("priority", "MEDIUM")],
+            pet_name=data.get("pet_name", ""),
+            preferred_time=preferred_time,
+            recurrence=data.get("recurrence", "daily"),
+            weekday=data.get("weekday"),
+            completed=bool(data.get("completed", False)),
+        )
+
     def is_due_on(self, today: date | None = None) -> bool:
         """True if this task should appear in the plan for `today`.
 
@@ -153,6 +212,20 @@ class Task:
             0 if anchored else 1,                       # anchored group first
             self.start_minutes() if anchored else 0,    # earliest time first
             -self.priority.weight(),                    # then most important
+            self.duration_minutes,                      # then quickest
+        )
+
+    def priority_time_sort_key(self) -> tuple[int, int, int, int]:
+        """Sort key for priority-first ordering (see sort_by_priority_then_time).
+
+        Ordered by: priority (high->low), then anchored-before-flexible, then
+        start time, then shortest duration. None-safe for flexible tasks.
+        """
+        anchored = self.preferred_time is not None
+        return (
+            -self.priority.weight(),                    # most important first
+            0 if anchored else 1,                       # anchored before flexible
+            self.start_minutes() if anchored else 0,    # then earliest time
             self.duration_minutes,                      # then quickest
         )
 
@@ -237,6 +310,28 @@ class Pet:
         if upcoming is not None:
             self.add_task(upcoming)
         return upcoming
+
+    def to_dict(self) -> dict:
+        """Serialize this pet and its task list (Challenge 2: persistence)."""
+        return {
+            "name": self.name,
+            "species": self.species,
+            "notes": self.notes,
+            "tasks": [t.to_dict() for t in self.tasks],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Pet":
+        """Rebuild a Pet (and its tasks) from a to_dict() payload."""
+        pet = cls(
+            name=data.get("name", ""),
+            species=data.get("species", "other"),
+            notes=data.get("notes", ""),
+        )
+        for task_data in data.get("tasks", []):
+            # add_task re-tags pet_name, keeping the back-reference consistent.
+            pet.add_task(Task.from_dict(task_data))
+        return pet
 
 
 @dataclass
@@ -359,6 +454,67 @@ class Owner:
                     break
                 conflicts.append((task, later))
         return conflicts
+
+    # ------------------------------------------------------------------ #
+    # Challenge 2: JSON persistence — remember pets & tasks between runs. #
+    # ------------------------------------------------------------------ #
+    def to_dict(self) -> dict:
+        """Serialize the whole owner (pets, tasks, constraints) to a dict.
+
+        Uses a custom dictionary conversion (rather than a library like
+        marshmallow) so the project stays dependency-free. The non-JSON types
+        are handled at the leaves: `time` -> "HH:MM" here, `Priority` -> name
+        in Task.to_dict. from_dict() is the exact inverse.
+        """
+        return {
+            "name": self.name,
+            "available_minutes": self.available_minutes,
+            "day_start": self.day_start.strftime("%H:%M"),
+            "day_end": (
+                self.day_end.strftime("%H:%M") if self.day_end is not None else None
+            ),
+            "preferences": self.preferences,
+            "pets": [pet.to_dict() for pet in self.pets],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Owner":
+        """Rebuild an Owner (with all pets and tasks) from a to_dict() payload."""
+        def parse_time(value: str | None) -> time | None:
+            if not value:
+                return None
+            hours, minutes = value.split(":")
+            return time(int(hours), int(minutes))
+
+        owner = cls(
+            name=data.get("name", ""),
+            available_minutes=int(data.get("available_minutes", 120)),
+            day_start=parse_time(data.get("day_start")) or time(8, 0),
+            day_end=parse_time(data.get("day_end")),
+            preferences=data.get("preferences", {}) or {},
+        )
+        for pet_data in data.get("pets", []):
+            owner.add_pet(Pet.from_dict(pet_data))
+        return owner
+
+    def save_to_json(self, path: str = "data.json") -> None:
+        """Write this owner (pets + tasks + constraints) to a JSON file.
+
+        Overwrites `path`. Pretty-printed so the saved data is human-readable
+        and diff-friendly. Pair with load_from_json to persist between runs.
+        """
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(self.to_dict(), fh, indent=2, ensure_ascii=False)
+
+    @classmethod
+    def load_from_json(cls, path: str = "data.json") -> "Owner":
+        """Load an owner previously written by save_to_json.
+
+        Raises FileNotFoundError if `path` doesn't exist yet — callers that
+        want "load if present, else start fresh" should catch it (see main.py).
+        """
+        with open(path, "r", encoding="utf-8") as fh:
+            return cls.from_dict(json.load(fh))
 
 
 @dataclass
@@ -509,6 +665,34 @@ class Scheduler:
         return self._sorted(
             [t for t in self.tasks if not t.completed and t.is_due_on(self.today)]
         )
+
+    def sort_by_priority_then_time(self) -> list[Task]:
+        """Order due, incomplete tasks by priority FIRST, then time (Challenge 3).
+
+        A view of the day that answers "what matters most, and when?" — high
+        priority tasks lead, ties broken by the earliest preferred time. Uses
+        the module-level sort_by_priority_then_time / Task.priority_time_sort_key.
+        """
+        due = [t for t in self.tasks if not t.completed and t.is_due_on(self.today)]
+        return sort_by_priority_then_time(due)
+
+    def next_available_slot(self, duration_minutes: int) -> time | None:
+        """Earliest start time a NEW task of `duration_minutes` could take today.
+
+        Third algorithmic capability (Challenge 1). Builds today's plan, then
+        finds the earliest gap in the day window large enough to hold a task of
+        the requested length — the same interval-sweep the scheduler uses
+        internally (_earliest_free), now exposed as a public "when can I fit
+        this?" query. Returns None if no gap that large remains.
+        """
+        if duration_minutes <= 0:
+            return time_from_minutes(minutes_since_midnight(self.day_start))
+        plan = self.build_plan()
+        day_start = minutes_since_midnight(self.day_start)
+        day_end = minutes_since_midnight(self.day_end)
+        # plan.slots is already kept in start-time order by build_plan.
+        start = self._earliest_free(day_start, day_end, duration_minutes, plan.slots)
+        return None if start is None else time_from_minutes(start)
 
     def build_plan(self) -> DailyPlan:
         """Place anchored tasks, then fill remaining time with flexible ones."""

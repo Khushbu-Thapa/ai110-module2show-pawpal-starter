@@ -10,6 +10,7 @@ from pawpal_system import (
     ScheduledSlot,
     Scheduler,
     Task,
+    sort_by_priority_then_time,
     sort_by_time,
 )
 
@@ -510,3 +511,142 @@ def test_scheduler_flags_duplicate_times():
     assert len(plan.skipped) == 1
     _task, reason = plan.skipped[0]
     assert "conflicts" in reason
+
+
+# --------------------------------------------------------------------------- #
+# Challenge 3: priority-first sorting (priority then time)                     #
+# --------------------------------------------------------------------------- #
+def test_sort_by_priority_then_time_orders_priority_first():
+    """A high-priority LATER task outranks a low-priority EARLIER one."""
+    grooming = Task("Grooming", 40, Priority.LOW, preferred_time=time(8, 0))
+    meds = Task("Meds", 10, Priority.HIGH, preferred_time=time(10, 0))
+    feed = Task("Feed", 10, Priority.HIGH, preferred_time=time(8, 30))
+
+    ordered = sort_by_priority_then_time([grooming, meds, feed])
+
+    # Both HIGH tasks come before the LOW one, despite grooming being earliest...
+    assert [t.description for t in ordered] == ["Feed", "Meds", "Grooming"]
+    # ...and within the HIGH band, the earlier time (08:30 Feed) wins.
+
+
+def test_sort_by_priority_then_time_anchored_before_flexible_in_band():
+    """Within a priority band, anchored (timed) tasks precede flexible ones."""
+    flexible = Task("Walk", 30, Priority.HIGH)  # no preferred_time
+    anchored = Task("Feed", 10, Priority.HIGH, preferred_time=time(9, 0))
+
+    ordered = sort_by_priority_then_time([flexible, anchored])
+
+    assert [t.description for t in ordered] == ["Feed", "Walk"]
+
+
+def test_scheduler_sort_by_priority_then_time_excludes_done_and_not_due():
+    """The Scheduler wrapper only returns incomplete, currently-due tasks."""
+    owner = Owner(name="Sam", day_start=time(8, 0))
+    pet = Pet(name="Rex", species="dog")
+    owner.add_pet(pet)
+    owner.add_task(pet, Task("Walk", 30, Priority.HIGH))
+    done = Task("Feed", 10, Priority.HIGH)
+    done.mark_complete()
+    owner.add_task(pet, done)
+    # Weekly task due only on Wednesday (weekday 2); "today" is a Monday.
+    owner.add_task(pet, Task("Vet", 20, Priority.LOW, recurrence="weekly", weekday=2))
+
+    ordered = Scheduler(owner, today=date(2024, 1, 1)).sort_by_priority_then_time()
+
+    assert [t.description for t in ordered] == ["Walk"]
+
+
+# --------------------------------------------------------------------------- #
+# Challenge 1: next available slot                                            #
+# --------------------------------------------------------------------------- #
+def test_next_available_slot_returns_first_gap_after_scheduled_tasks():
+    """next_available_slot finds the earliest free time a new task could take."""
+    owner = Owner(name="Sam", available_minutes=120, day_start=time(8, 0))
+    pet = Pet(name="Rex", species="dog")
+    owner.add_pet(pet)
+    # A single 30-min anchor at 08:00 fills 08:00-08:30.
+    owner.add_task(pet, Task("Walk", 30, Priority.HIGH, preferred_time=time(8, 0)))
+
+    slot = Scheduler(owner).next_available_slot(20)
+
+    assert slot == time(8, 30)
+
+
+def test_next_available_slot_returns_none_when_no_room():
+    """When nothing large enough is left in the window, returns None."""
+    owner = Owner(name="Sam", available_minutes=60, day_start=time(8, 0))
+    pet = Pet(name="Rex", species="dog")
+    owner.add_pet(pet)
+    owner.add_task(pet, Task("Walk", 30, Priority.HIGH))
+
+    # Window is 08:00-09:00 (60 min); 30 used, so a 45-min task can't fit.
+    assert Scheduler(owner).next_available_slot(45) is None
+
+
+def test_next_available_slot_empty_day_returns_day_start():
+    """With no tasks placed, the earliest slot is the start of the day."""
+    owner = Owner(name="Sam", available_minutes=120, day_start=time(7, 0))
+    owner.add_pet(Pet(name="Rex", species="dog"))
+
+    assert Scheduler(owner).next_available_slot(30) == time(7, 0)
+
+
+# --------------------------------------------------------------------------- #
+# Challenge 2: JSON persistence (round-trip)                                  #
+# --------------------------------------------------------------------------- #
+def test_task_to_dict_from_dict_round_trip():
+    """A Task survives serialization: enum + time restored to real objects."""
+    task = Task(
+        "Meds", 15, Priority.HIGH, pet_name="Rex",
+        preferred_time=time(9, 30), recurrence="weekly", weekday=2, completed=True,
+    )
+
+    restored = Task.from_dict(task.to_dict())
+
+    assert restored.description == "Meds"
+    assert restored.duration_minutes == 15
+    assert restored.priority is Priority.HIGH  # real enum, not the string "HIGH"
+    assert restored.pet_name == "Rex"
+    assert restored.preferred_time == time(9, 30)  # real time, not "09:30"
+    assert restored.recurrence == "weekly"
+    assert restored.weekday == 2
+    assert restored.completed is True
+
+
+def test_owner_save_and_load_round_trip(tmp_path):
+    """save_to_json + load_from_json rebuild an equivalent Owner from disk."""
+    owner = Owner(name="Jordan", available_minutes=90, day_start=time(7, 30))
+    mochi = Pet(name="Mochi", species="dog", notes="likes long walks")
+    owner.add_pet(mochi)
+    owner.add_task(mochi, Task("Walk", 30, Priority.HIGH, preferred_time=time(8, 0)))
+    owner.add_task(mochi, Task("Grooming", 40, Priority.LOW))
+
+    path = tmp_path / "data.json"
+    owner.save_to_json(str(path))
+    loaded = Owner.load_from_json(str(path))
+
+    assert loaded.name == "Jordan"
+    assert loaded.available_minutes == 90
+    assert loaded.day_start == time(7, 30)
+    assert [p.name for p in loaded.pets] == ["Mochi"]
+    assert loaded.pets[0].notes == "likes long walks"
+    tasks = loaded.pets[0].tasks
+    assert [t.description for t in tasks] == ["Walk", "Grooming"]
+    assert tasks[0].priority is Priority.HIGH
+    assert tasks[0].preferred_time == time(8, 0)
+    # pet_name back-reference is preserved on load.
+    assert all(t.pet_name == "Mochi" for t in tasks)
+
+
+def test_loaded_owner_can_still_schedule():
+    """A reloaded Owner is a fully working object, not just data."""
+    owner = Owner(name="Jordan", available_minutes=120, day_start=time(8, 0))
+    pet = Pet(name="Rex", species="dog")
+    owner.add_pet(pet)
+    owner.add_task(pet, Task("Walk", 30, Priority.HIGH))
+
+    reloaded = Owner.from_dict(owner.to_dict())
+    plan = Scheduler(reloaded).build_plan()
+
+    assert len(plan.slots) == 1
+    assert plan.slots[0].task.description == "Walk"

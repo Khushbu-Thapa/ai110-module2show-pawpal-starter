@@ -1,6 +1,10 @@
+import os
+
 import streamlit as st
 
 import pawpal_system
+
+DATA_FILE = "data.json"
 
 st.set_page_config(page_title="PawPal+", page_icon="🐾", layout="centered")
 
@@ -15,10 +19,33 @@ then generate a daily schedule that orders tasks by priority, time, and preferen
 
 # --- Persistent state -------------------------------------------------------
 # Streamlit reruns the whole script on every interaction, so we keep the Owner
-# in st.session_state. Create it once; reuse it (with all pets/tasks) after.
+# in st.session_state. On first load we restore any saved data.json (so pets and
+# tasks persist between runs); otherwise we start with a fresh Owner.
 if "owner" not in st.session_state:
-    st.session_state.owner = pawpal_system.Owner(name="Jordan")
+    if os.path.exists(DATA_FILE):
+        try:
+            st.session_state.owner = pawpal_system.Owner.load_from_json(DATA_FILE)
+        except Exception:
+            st.session_state.owner = pawpal_system.Owner(name="Jordan")
+    else:
+        st.session_state.owner = pawpal_system.Owner(name="Jordan")
 owner = st.session_state.owner
+
+# --- Persistence controls (Challenge 2) -------------------------------------
+with st.sidebar:
+    st.header("💾 Data")
+    st.caption(f"Pets and tasks are saved to `{DATA_FILE}`.")
+    save_col, load_col = st.columns(2)
+    if save_col.button("Save"):
+        owner.save_to_json(DATA_FILE)
+        st.success("Saved to data.json.")
+    if load_col.button("Load"):
+        if os.path.exists(DATA_FILE):
+            st.session_state.owner = pawpal_system.Owner.load_from_json(DATA_FILE)
+            st.success("Loaded from data.json.")
+            st.rerun()
+        else:
+            st.warning("No data.json found yet — add pets/tasks and Save first.")
 
 st.divider()
 
@@ -84,7 +111,7 @@ if all_tasks:
     with fcol2:
         status_filter = st.selectbox("Filter by status", ["All", "Pending", "Completed"])
     with fcol3:
-        sort_choice = st.selectbox("Sort by", ["As added", "By time"])
+        sort_choice = st.selectbox("Sort by", ["As added", "By time", "By priority"])
 
     # Apply the filters via Owner.filter_tasks (pet name / completion status).
     completed = {"Pending": False, "Completed": True}.get(status_filter)
@@ -96,6 +123,11 @@ if all_tasks:
     # Apply the chosen sort.
     if sort_choice == "By time":
         tasks = pawpal_system.sort_by_time(tasks)
+    elif sort_choice == "By priority":
+        # Same rule the Scheduler uses: priority high->low, then shortest first.
+        tasks = sorted(
+            tasks, key=lambda t: (-t.priority.weight(), t.duration_minutes)
+        )
 
     if tasks:
         st.table(
@@ -136,10 +168,32 @@ if st.button("Generate schedule"):
         st.warning("No pending tasks to schedule. Add some tasks first.")
     else:
         plan = pawpal_system.Scheduler(owner).build_plan()
+
         # Post-schedule validation: surface any overlaps as a warning, never crash.
         plan_warning = plan.conflict_warning()
         if plan_warning:
             st.warning(plan_warning)
+
+        # The scheduled plan — a success banner, quick metrics, then the table.
         if plan.slots:
+            st.success(
+                f"Scheduled {len(plan.slots)} task"
+                f"{'s' if len(plan.slots) != 1 else ''} "
+                f"using {plan.total_minutes_used} min."
+            )
+            mcol1, mcol2 = st.columns(2)
+            mcol1.metric("Tasks scheduled", len(plan.slots))
+            mcol2.metric("Minutes used", plan.total_minutes_used)
             st.table(plan.to_table())
-        st.text(plan.explain())
+        else:
+            st.info("No tasks could be scheduled with the current settings.")
+
+        # Anything left out, shown clearly with the scheduler's own reason.
+        if plan.skipped:
+            with st.expander(f"Skipped ({len(plan.skipped)})", expanded=True):
+                st.table(
+                    [
+                        {"Task": task.description, "Reason": reason}
+                        for task, reason in plan.skipped
+                    ]
+                )
